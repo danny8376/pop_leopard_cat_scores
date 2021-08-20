@@ -156,8 +156,9 @@ ws "/submit" do |socket|
         end
         if idx != -1
           last = Time.monotonic
+          prev = r.score
           hasher.score = r.step_score
-          socket.send "ack,#{r.score},#{idx},#{hasher.renew_salt if renew_salt}"
+          socket.send "ack,#{prev},#{r.score},#{idx},#{hasher.renew_salt if renew_salt}"
           renew_salt = false
         end
       end
