@@ -8,6 +8,7 @@ require "./hasher"
 require "./db"
 
 TIMEOUT = 5.seconds
+SAVE_PERIOD = 2.seconds
 MAX_ALLOW_PPS = 350
 
 database = Database.new
@@ -72,10 +73,18 @@ ws "/submit" do |socket|
   start = last = sec = Time.monotonic
   renew_salt = false
   hasher = Hasher::DUMMY
-  spawn do # timeout watcher
+  spawn do # external timer
+    save_last = Time.monotonic
     until socket.closed?
-      if Time.monotonic - last > TIMEOUT
+      now = Time.monotonic
+      # timeout check
+      if now - last > TIMEOUT
         socket.close
+      end
+      # save check
+      if now - save_last > SAVE_PERIOD
+        save_last = now
+        record.try &.save
       end
       sleep 1.seconds
     end
