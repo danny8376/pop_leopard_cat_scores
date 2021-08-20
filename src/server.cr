@@ -49,6 +49,27 @@ get "/global" do |env|
   end
 end
 
+global_sockets = [] of HTTP::WebSocket
+
+spawn do
+  while Kemal.config.running
+    json = JSON.build do |json|
+      json_global json
+    end
+    global_sockets.each do |socket|
+      socket.send json
+    end
+    sleep 1.second
+  end
+end
+
+ws "/global" do |socket|
+  global_sockets.push socket
+  socket.on_close do
+    global_sockets.delete socket
+  end
+end
+
 get "/top/:amount" do |env|
   amount = {env.params.url["amount"].to_i? || 10, 100}.min
   JSON.build do |json|
@@ -86,7 +107,7 @@ ws "/submit" do |socket|
         save_last = now
         record.try &.save
       end
-      sleep 1.seconds
+      sleep 1.second
     end
   end
   socket.on_message do |message|
