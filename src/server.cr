@@ -52,12 +52,16 @@ end
 global_sockets = [] of HTTP::WebSocket
 
 spawn do
+  last = Record.score
   while Kemal.config.running
-    json = JSON.build do |json|
-      json_global json
-    end
-    global_sockets.each do |socket|
-      socket.send json
+    if last != Record.score
+      last = Record.score
+      json = JSON.build do |json|
+        json_global json
+      end
+      global_sockets.each do |socket|
+        socket.send json
+      end
     end
     sleep 1.second
   end
