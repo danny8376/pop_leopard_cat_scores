@@ -56,12 +56,8 @@ spawn do
   while Kemal.config.running
     if last != Record.score
       last = Record.score
-      json = JSON.build do |json|
-        json_global json
-      end
-      global_sockets.each do |socket|
-        socket.send json
-      end
+      json = JSON.build { |json| json_global json }
+      global_sockets.each { |socket| socket.send json }
     end
     sleep 1.second
   end
@@ -72,6 +68,8 @@ ws "/global" do |socket|
   socket.on_close do
     global_sockets.delete socket
   end
+  # init packet
+  socket.send JSON.build { |json| json_global json }
 end
 
 get "/top/:amount" do |env|
