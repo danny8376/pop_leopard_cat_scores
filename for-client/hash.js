@@ -4,8 +4,7 @@
 
 (function() {
     var R = 'input is invalid type';
-    var AB = null;
-    var A = typeof AB !== 'undefined';
+    var AB = window.ArrayBuffer;
     var U8A = Uint8Array;
     var U32A = Uint32Array;
     var E = [128, 32768, 8388608, -2147483648];
@@ -19,26 +18,28 @@
     var m = 'map';
     var u = 'unshift';
 
-    var time = function() { return new Date() };
-    
-    if (A) AB = ArrayBuffer;
+    var AiA = Array.isArray;
 
     var blocks = [],
         buffer8;
-    if (A) {
+
+    var time = function() { return new Date() };
+
+    var last = time();
+
+    if (AB) {
         var buffer = new AB(68);
         buffer8 = new U8A(buffer);
         blocks = new U32A(buffer);
     }
 
-    var AiA = Array.isArray;
     if (!AiA) {
         AiA = function(obj) {
             return Object.prototype.toString.call(obj) === '[object Array]';
         };
     }
 
-    if (A) {
+    if (AB) {
         var ABiV = AB.isView;
         if (!ABiV) {
             ABiV = function(obj) {
@@ -83,7 +84,7 @@
             this.l = blocks;
             this.b = buffer8;
         } else {
-            if (A) {
+            if (AB) {
                 var buffer = new AB(68);
                 this.b = new U8A(buffer);
                 this.l = new U32A(buffer);
@@ -117,10 +118,10 @@
             if (type === _o) {
                 if (message === null) {
                     throw R;
-                } else if (A && message.constructor === AB) {
+                } else if (message.constructor === AB) {
                     message = new U8A(message);
                 } else if (!AiA(message)) {
-                    if (!A || !ABiV(message)) {
+                    if (!AB || !ABiV(message)) {
                         throw R;
                     }
                 }
@@ -145,7 +146,7 @@
             }
 
             if (notString) {
-                if (A) {
+                if (AB) {
                     for (i = this.s; index < length && i < 64; ++index) {
                         buffer8[i++] = message[index];
                     }
@@ -155,7 +156,7 @@
                     }
                 }
             } else {
-                if (A) {
+                if (AB) {
                     for (i = this.s; index < length && i < 64; ++index) {
                         code = message[_cCA](index);
                         if (code < 0x80) {
@@ -454,8 +455,6 @@
         }
         return str;
     };
-
-    var last = time();
 
     window.hash = function(h, a, c, e, dbg) {
         var now = time();
