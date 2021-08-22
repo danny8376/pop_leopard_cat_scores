@@ -136,7 +136,7 @@ ws "/top/:amount" do |socket, context|
 end
 
 ws "/submit" do |socket, context|
-  unless ["http://10.250.150.95", "https://no15rescute.github.io"].includes? context.request.headers["Origin"]?
+  unless ["http://10.250.150.95", "http://home.saru.moe", "https://no15rescute.github.io"].includes? context.request.headers["Origin"]?
     socket.close HTTP::WebSocket::CloseCode::PolicyViolation, "not authorized"
     next
   end
