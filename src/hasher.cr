@@ -6,12 +6,13 @@ class Hasher
   DUMMY = Hasher.new UUID.empty
 
   getter id : UUID
-  property score : Int64
+  getter score : Int64
   getter result : String
   getter salt : String
+  getter last : String
 
   def initialize(@id, @score = 0_i64)
-    @result = init_hash
+    @last = @result = init_hash
     @salt = gen_salt
   end
 
@@ -32,6 +33,10 @@ class Hasher
   end
 
   def gen_hash(secs)
-    @result = calc_hash "#{@result}|#{secs}|#{@score}|#{@salt}"
+    @result = calc_hash "#{@last}|#{secs}|#{@score}|#{@salt}"
+  end
+
+  def score=(@score)
+    @last = @result
   end
 end

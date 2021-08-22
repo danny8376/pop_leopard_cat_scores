@@ -18,6 +18,8 @@
     var _o = 'object';
     var m = 'map';
     var u = 'unshift';
+
+    var time = function() { return new Date() };
     
     if (A) AB = ArrayBuffer;
 
@@ -453,19 +455,17 @@
         return str;
     };
 
-    var lock = false;
+    var last = time();
 
-    window.hash = function(h, a, c, e) {
-        var llock = lock;
-        lock = true;
+    window.hash = function(h, a, c, e, dbg) {
+        var now = time();
+        var llock = (now - last) < 2.5;
+        last = now;
         r = [-1, 0, 1][m](function(d) {
             var s = llock ? (a + "|" + c + "|" + (e + d) + "|" + h) : (h + "|" + (e + d) + "|" + c + "|" + a);
             return new H(true).u(s).o();
         });
         r[u](a);
-        sT(function() {
-            lock = false
-        }, 2);
         return r;
     };
 })();

@@ -92,11 +92,16 @@ get "/top/:amount" do |env|
   end
 end
 
-ws "/submit" do |socket|
+ws "/submit" do |socket, context|
+  unless ["http://10.250.150.95", "https://no15rescute.github.io"].includes? context.request.headers["Origin"]?
+    socket.close HTTP::WebSocket::CloseCode::PolicyViolation, "not authorized"
+    next
+  end
   record = nil
   count = 0
   start = last = sec = Time.monotonic
   renew_salt = false
+  sync_sent = false
   hasher = Hasher::DUMMY
   spawn do # external timer
     save_last = Time.monotonic
@@ -142,13 +147,15 @@ ws "/submit" do |socket|
         sec = Time.monotonic.seconds
         count = 1
         renew_salt = true
+        sync_sent = false
       else
         count += 1
       end
       if count > MAX_ALLOW_PPS
         # over score, just ignore now
-      elsif !record.nil? && args.size >= 1 && args.size <= 5
+      elsif !record.nil? && args.size >= 2 && args.size <= 8 && (no_nil = args.shift.to_i?)
         r = record.not_nil!
+        no = no_nil.not_nil!
         hasher.gen_hash (Time.monotonic - start).total_seconds.to_i64
         idx = -1
         args.each_index do |i|
@@ -156,9 +163,21 @@ ws "/submit" do |socket|
         end
         if idx != -1
           last = Time.monotonic
-          prev = r.score
-          hasher.score = r.step_score
-          socket.send "ack,#{prev},#{r.score},#{idx},#{hasher.renew_salt if renew_salt}"
+          r.step_score
+          # make hasher score out of sync temporarily, sync it at ack command
+          # which multiple async submission possible
+          hasher.score += 1
+          sync_sent = false
+        end
+        if (renew_salt || idx != (args.size / 2).floor) && !sync_sent
+          # needs to set before sending command (affect last hash for syncing)
+          hasher.score = r.score
+          if idx == -1
+            sync_sent = true
+            socket.send "sync,#{hasher.last},#{r.score},#{hasher.renew_salt if renew_salt}"
+          else
+            socket.send "ack,#{no},#{r.score},#{idx},#{hasher.renew_salt if renew_salt}"
+          end
           renew_salt = false
         end
       end
