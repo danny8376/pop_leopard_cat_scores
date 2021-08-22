@@ -109,7 +109,7 @@ class TopWSPair
           @json = render_top @amount
           sockets.each { |socket| socket.send @json }
         end
-        sleep 1.second
+        sleep SAVE_PERIOD
       end
     end
   end
