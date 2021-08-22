@@ -11,8 +11,8 @@ TIMEOUT = 5.seconds
 SAVE_PERIOD = 2.seconds
 MAX_ALLOW_PPS = 350
 
-database = Database.new
-Record.init database
+DATABASE = Database.new
+Record.init DATABASE
 
 records = Hash(UUID, Record).new
 
@@ -56,8 +56,10 @@ spawn do
   while Kemal.config.running
     if last != Record.score
       last = Record.score
-      json = JSON.build { |json| json_global json }
-      global_sockets.each { |socket| socket.send json }
+      unless global_sockets.empty?
+        json = JSON.build { |json| json_global json }
+        global_sockets.each { |socket| socket.send json }
+      end
     end
     sleep 1.second
   end
@@ -72,8 +74,7 @@ ws "/global" do |socket|
   socket.send JSON.build { |json| json_global json }
 end
 
-get "/top/:amount" do |env|
-  amount = {env.params.url["amount"].to_i? || 10, 100}.min
+def render_top(amount)
   JSON.build do |json|
     json.object do
       json.field "global" do
@@ -81,13 +82,57 @@ get "/top/:amount" do |env|
       end
       json.field "top" do
         json.array do
-          database.top(amount).each do |r|
+          DATABASE.top(amount).each do |r|
             json_record json, r
           end
         end
       end
     end
   end
+end
+
+get "/top/:amount" do |env|
+  amount = {env.params.url["amount"].to_i? || 10, 100}.min
+  render_top amount
+end
+
+class TopWSPair
+  getter amount : Int32
+  getter sockets : Array(HTTP::WebSocket)
+  def initialize(no)
+    @amount = no + 1
+    @sockets = [] of HTTP::WebSocket
+    @json = ""
+    spawn do
+      while Kemal.config.running
+        unless sockets.empty?
+          @json = render_top @amount
+          sockets.each { |socket| socket.send @json }
+        end
+        sleep 1.second
+      end
+    end
+  end
+
+  def send_init_packet(socket)
+    if sockets.empty?
+      @json = render_top @amount
+    end
+    socket.send @json
+  end
+end
+
+top_sockets = StaticArray(TopWSPair, 100).new { |i| TopWSPair.new i }
+
+ws "/top/:amount" do |socket, context|
+  amount = {1, {context.ws_route_lookup.params["amount"].to_i? || 10, 100}.min }.max
+  pair = top_sockets[amount - 1]
+  pair.sockets.push socket
+  socket.on_close do
+    pair.sockets.delete socket
+  end
+  # init packet
+  pair.send_init_packet socket
 end
 
 ws "/submit" do |socket, context|
@@ -123,7 +168,7 @@ ws "/submit" do |socket, context|
     case cmd
     when "new"
       record = r = Record.new
-      r.database = database
+      r.database = DATABASE
       records[r.id] = r
       hasher = Hasher.new r.id, r.score
       start = last = sec = Time.monotonic
@@ -133,7 +178,7 @@ ws "/submit" do |socket, context|
         begin
           id = UUID.new args[0]
           record = r = records[id]? || Record.new id
-          r.database = database
+          r.database = DATABASE
           hasher = Hasher.new r.id, r.score
           start = last = sec = Time.monotonic
           socket.send "init,#{r.id.to_s},#{r.score},#{hasher.result},#{hasher.salt}"
@@ -193,8 +238,8 @@ end
 
 at_exit do
   records.each_value { |r| r.save }
-  database.save_global
-  database.close
+  DATABASE.save_global
+  DATABASE.close
 end
 
 # TODO: move this to config
