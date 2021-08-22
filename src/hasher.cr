@@ -6,7 +6,7 @@ class Hasher
   DUMMY = Hasher.new UUID.empty
 
   getter id : UUID
-  getter score : Int64
+  property score : Int64
   getter result : String
   getter salt : String
   getter last : String
@@ -36,7 +36,7 @@ class Hasher
     @result = calc_hash "#{@last}|#{secs}|#{@score}|#{@salt}"
   end
 
-  def score=(@score)
+  def next
     @last = @result
   end
 end

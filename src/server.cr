@@ -167,16 +167,18 @@ ws "/submit" do |socket, context|
           # make hasher score out of sync temporarily, sync it at ack command
           # which multiple async submission possible
           hasher.score += 1
+          hasher.next
           sync_sent = false
         end
         if (renew_salt || idx != (args.size / 2).floor) && !sync_sent
           # needs to set before sending command (affect last hash for syncing)
-          hasher.score = r.score
           if idx == -1
             sync_sent = true
+            hasher.score = r.score
+            hasher.next
             socket.send "sync,#{hasher.last},#{r.score},#{hasher.renew_salt if renew_salt}"
           else
-            socket.send "ack,#{no},#{r.score},#{idx},#{hasher.renew_salt if renew_salt}"
+            socket.send "ack,#{no},#{idx},#{hasher.score},#{r.score},#{hasher.renew_salt if renew_salt}"
           end
           renew_salt = false
         end
