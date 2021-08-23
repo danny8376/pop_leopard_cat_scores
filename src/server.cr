@@ -19,7 +19,13 @@ Record.global_autosave SAVE_PERIOD
 
 YT_API = HTTP::Client.new URI.parse("https://www.googleapis.com")
 
-ALLOW_ORIGINS = ["http://10.250.150.95", "http://home.saru.moe", "https://no15rescute.github.io"]
+ALLOW_ORIGINS = %w(
+http://10.250.150.95
+http://home.saru.moe
+https://home.saru.moe
+https://no15rescute.github.io
+https://springfish04.github.io
+)
 
 records = Hash(Tuple(Record::Scope, UUID), Record).new
 
