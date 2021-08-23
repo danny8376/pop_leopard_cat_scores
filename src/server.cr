@@ -15,18 +15,23 @@ MAX_ALLOW_PPS = 350
 
 DATABASE = Database.new
 Record.init DATABASE
+Record.global_autosave SAVE_PERIOD
 
 YT_API = HTTP::Client.new URI.parse("https://www.googleapis.com")
 
 ALLOW_ORIGINS = ["http://10.250.150.95", "http://home.saru.moe", "https://no15rescute.github.io"]
 
-records = Hash(UUID, Record).new
+records = Hash(Tuple(Record::Scope, UUID), Record).new
 
-def json_global(json)
+def json_global(json, g : Record)
   json.object do
-    json.field "score", Record.score
-    json.field "period", Record.period
+    json.field "score", g.score
+    json.field "period", g.period
   end
+end
+
+def json_global(json, scope)
+  json_global json, Record.fetch(scope)
 end
 
 def json_record(json, record : Tuple(UUID, Int64, Int32, String?, String?, String?))
@@ -54,46 +59,60 @@ get "/internal_status" do |env|
   "In memory records : #{records.size}"
 end
 
-get "/global" do |env|
+get "/:scope/global" do |env|
+  scope = env.params.url["scope"]
   JSON.build do |json|
-    json_global json
+    json_global json, scope
   end
+rescue Record::OutOfScope
+  halt env, 404
 end
 
-global_sockets = [] of HTTP::WebSocket
-
-spawn do
-  last = Record.score
-  while Kemal.config.running
-    if last != Record.score
-      last = Record.score
-      unless global_sockets.empty?
-        json = JSON.build { |json| json_global json }
-        global_sockets.each { |socket| socket.send json }
+global_sockets = Record.scope_build do |scope|
+  ary = [] of HTTP::WebSocket
+  r = Record.fetch scope
+  spawn do
+    last = r.score
+    while Kemal.config.running
+      if last != r.score
+        last = r.score
+        unless ary.empty?
+          json = JSON.build { |json| json_global json, r }
+          ary.each { |socket| socket.send json }
+        end
       end
+      sleep 1.second
     end
-    sleep 1.second
   end
+  ary
 end
 
-ws "/global" do |socket|
-  global_sockets.push socket
-  socket.on_close do
-    global_sockets.delete socket
+ws "/:scope/global" do |socket, context|
+  scope = Record::Scope.parse? context.ws_route_lookup.params["scope"]
+  if scope.nil?
+    socket.close
+  else
+    ary = global_sockets[scope.not_nil!.value]
+    ary.push socket
+    socket.on_close do
+      ary.delete socket
+    end
+    # init packet
+    socket.send JSON.build { |json| json_global json, scope.not_nil! }
   end
-  # init packet
-  socket.send JSON.build { |json| json_global json }
+rescue ArgumentError
+  socket.close
 end
 
-def render_top(amount)
+def render_top(scope, global = Record.fetch(scope))
   JSON.build do |json|
     json.object do
       json.field "global" do
-        json_global json
+        json_global json, global
       end
       json.field "top" do
         json.array do
-          DATABASE.top(amount).each do |r|
+          DATABASE.top(scope, amount).each do |r|
             json_record json, r
           end
         end
@@ -102,55 +121,146 @@ def render_top(amount)
   end
 end
 
-get "/top/:amount" do |env|
-  amount = {env.params.url["amount"].to_i? || 10, 100}.min
-  render_top amount
-end
 
-class TopWSPair
-  getter amount : Int32
-  getter sockets : Array(HTTP::WebSocket)
-  def initialize(no)
-    @amount = no + 1
-    @sockets = [] of HTTP::WebSocket
-    @json = ""
+class TopTracker
+  class Pair
+    getter amount : Int32
+    property cache
+    getter sockets
+
+    def initialize(@amount)
+      @cache = ""
+      @sockets = [] of HTTP::WebSocket
+    end
+
+    def send_all(msg = @cache)
+      @sockets.each { |socket| socket.send msg }
+    end
+  end
+
+  getter scope : Record::Scope
+
+  @global : Record
+
+  def initialize(@scope)
+    @global = Record.fetch @scope
+    @pairs = StaticArray(Pair, 100).new { |i| Pair.new i + 1 }
+    @data = [] of Tuple(UUID, Int64, Int32, String?, String?, String?)
+    @max = 0
     spawn do
       while Kemal.config.running
-        unless sockets.empty?
-          @json = render_top @amount
-          sockets.each { |socket| socket.send @json }
+        if @max > 0
+          @data = fetch
+          render_caches true
         end
         sleep SAVE_PERIOD
       end
     end
   end
 
-  def send_init_packet(socket)
-    if sockets.empty?
-      @json = render_top @amount
+  def pairs(amount : Int32)
+    @pairs[amount - 1]
+  end
+
+  def check_max
+    @pairs.reverse_each do |pair|
+      if pair.sockets.size > 0
+        @max = pair.amount
+        break
+      end
     end
-    socket.send @json
+  end
+
+  def send_init_packet(socket, pair)
+    socket.send render_single(pair)
+  end
+
+  def join_socket(socket, amount)
+    if amount > @max
+      @max = amount
+      fetch
+    end
+    pair = pairs(amount)
+    ary = pair.sockets
+    ary.push socket
+    socket.on_close do
+      ary.delete socket
+      check_max if ary.empty?
+    end
+    send_init_packet(socket, pair)
+  end
+
+  def fetch(size = @max)
+    amount = {size, @max}.max
+    @data = DATABASE.top scope.value, amount
+  end
+
+  def render_caches(send = false)
+    @pairs.each do |pair|
+      if pair.sockets.size > 0
+        pair.cache = render pair.amount
+        pair.send_all if send
+      else
+        pair.cache = ""
+      end
+    end
+  end
+
+  def render_single(amount : Int32)
+    render_single pairs(amount)
+  end
+
+  def render_single(pair : Pair)
+    if pair.cache.empty?
+      pair.cache = render pair.amount
+    end
+    pair.cache
+  end
+
+  def render(amount)
+    fetch amount if @data.size < amount
+    JSON.build do |json|
+      json.object do
+        json.field "global" do
+          json_global json, @global
+        end
+        json.field "top" do
+          json.array do
+            @data[0, amount].each do |r|
+              json_record json, r
+            end
+          end
+        end
+      end
+    end
   end
 end
 
-top_sockets = StaticArray(TopWSPair, 100).new { |i| TopWSPair.new i }
+top_trackers = Record.scope_build { |scope| TopTracker.new scope }
 
-ws "/top/:amount" do |socket, context|
+get "/:scope/top/:amount" do |env|
+  scope = Record::Scope.parse env.params.url["scope"]
+  amount = {1, {env.params.url["amount"].to_i? || 10, 100}.min }.max
+  top_trackers[scope.value].render_single amount
+rescue ArgumentError
+  halt env, 404
+end
+
+ws "/:scope/top/:amount" do |socket, context|
+  scope = Record::Scope.parse context.ws_route_lookup.params["scope"]
   amount = {1, {context.ws_route_lookup.params["amount"].to_i? || 10, 100}.min }.max
-  pair = top_sockets[amount - 1]
-  pair.sockets.push socket
-  socket.on_close do
-    pair.sockets.delete socket
-  end
-  # init packet
-  pair.send_init_packet socket
+  top_trackers[scope.value].join_socket socket, amount
+rescue ArgumentError
+  socket.close
 end
 
-ws "/submit" do |socket, context|
+ws "/:scope/submit" do |socket, context|
   unless ALLOW_ORIGINS.includes? context.request.headers["Origin"]?
     socket.close HTTP::WebSocket::CloseCode::PolicyViolation, "not authorized"
     next
   end
+  scope = Record::Scope.parse context.ws_route_lookup.params["scope"]
+
   record = nil
   count = 0
   start = last = sec = Time.monotonic
@@ -178,9 +288,8 @@ ws "/submit" do |socket, context|
     cmd = args.shift
     case cmd
     when "new"
-      record = r = Record.new
-      r.database = DATABASE
-      records[r.id] = r
+      record = r = Record.new scope
+      records[{scope, r.id}] = r
       hasher = Hasher.new r.id, r.score
       start = last = sec = Time.monotonic
       socket.send "init,#{r.id.to_s},#{r.score},#{hasher.result},#{hasher.salt}"
@@ -188,8 +297,7 @@ ws "/submit" do |socket, context|
       if args.size >= 1
         begin
           id = UUID.new args[0]
-          record = r = records[id]? || Record.new id
-          r.database = DATABASE
+          record = r = records[{scope, id}]? || Record.new scope, id
           hasher = Hasher.new r.id, r.score
           start = last = sec = Time.monotonic
           socket.send "init,#{r.id.to_s},#{r.score},#{hasher.result},#{hasher.salt}"
@@ -242,9 +350,11 @@ ws "/submit" do |socket, context|
   socket.on_close do
     record.try do |r|
       r.save
-      records.delete r.id
+      records.delete({scope, r.id})
     end
   end
+rescue ArgumentError
+  socket.close
 end
 
 post "/link/:id/yt" do |env|
@@ -252,7 +362,7 @@ post "/link/:id/yt" do |env|
   token_nil = env.request.body.try &.gets(512)
   if token_nil
     token = token_nil.not_nil!
-    DATABASE.load score_id
+    halt env, 404 unless DATABASE.id_exist? score_id
     res = YT_API.get "/youtube/v3/channels?part=snippet&mine=true&access_token=#{URI.encode token}"
     if res.status_code == 200
       begin
@@ -273,8 +383,6 @@ post "/link/:id/yt" do |env|
   end
 rescue ArgumentError
   halt env, 400
-rescue Database::NoResult
-  halt env, 404
 end
 
 before_all do |env|
@@ -286,7 +394,7 @@ end
 
 at_exit do
   records.each_value { |r| r.save }
-  DATABASE.save_global
+  Record.save
   DATABASE.close
 end
 

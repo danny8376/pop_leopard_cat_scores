@@ -1,5 +1,6 @@
 require "db"
 require "sqlite3"
+require "uuid"
 
 require "./record"
 
@@ -27,7 +28,8 @@ class Database
   def init_tables
     @db.exec <<-SQLCMD
       CREATE TABLE IF NOT EXISTS scores (
-        id     BLOB PRIMARY KEY,
+        id     BLOB NOT NULL,
+        scope  INTEGER NOT NULL,
         score  INTEGER DEFAULT 0,
         period INTEGER DEFAULT 0
       );
@@ -40,56 +42,48 @@ class Database
         avatar   TEXT
       );
       SQLCMD
+    @db.exec "CREATE UNIQUE INDEX IF NOT EXISTS scores_primary ON scores (id, scope);"
+    @db.exec "CREATE INDEX IF NOT EXISTS scores_scope ON scores (scope);"
     @db.exec "CREATE UNIQUE INDEX IF NOT EXISTS ytbind_primary ON ytbind (id, score_id);"
     @db.exec "CREATE INDEX IF NOT EXISTS ytbind_id ON ytbind (id);"
     @db.exec "CREATE INDEX IF NOT EXISTS ytbind_score_id ON ytbind (score_id);"
   end
 
-  def load(id : UUID)
-    begin
-      score, period = @db.query_one "SELECT score, period FROM scores WHERE id = ?;", id.bytes.to_slice, as: {Int64, Int32}
-      {score, period}
-    rescue DB::NoResultsError
-      raise NoResult.new
-    end
+  def load(scope : Int32, id : UUID)
+    score, period = @db.query_one "SELECT score, period FROM scores WHERE scope = ? AND id = ?;", scope, id.bytes.to_slice, as: {Int64, Int32}
+    {score, period}
+  rescue DB::NoResultsError
+    raise NoResult.new
   end
 
-  def load_global
-    load GLOBAL_ID
-  end
-
-  def save(id : UUID, score : Int64, period : Int32)
+  def save(scope : Int32, id : UUID, score : Int64, period : Int32)
     cmd = <<-SQLCMD
-      INSERT INTO scores (id, score, period)
-        VALUES (?, ?, ?)
-        ON CONFLICT (id) DO
+      INSERT INTO scores (id, scope, score, period)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT (id, scope) DO
         UPDATE SET score = ?, period = ?;
       SQLCMD
     @db.exec cmd,
-      id.bytes.to_slice, score, period,
+      id.bytes.to_slice, scope, score, period,
       score, period
   end
 
   def save(record : Record)
-    save record.id, record.score, record.period
+    save record.scope.value, record.id, record.score, record.period
   end
 
-  def save_global
-    save GLOBAL_ID, Record.score, Record.period
-  end
-
-  def top(n = 100)
+  def top(scope : Int32, n = 100)
     res = [] of Tuple(UUID, Int64, Int32, String?, String?, String?)
     cmd = <<-SQLCMD
       SELECT s.id, SUM(s.score) AS score, MAX(s.period) AS period, COALESCE(yt.id, s.id) AS group_id, yt.id, yt.name, yt.avatar
         FROM scores s
         LEFT JOIN ytbind yt ON s.id = yt.score_id
-        WHERE s.id != ?
+        WHERE s.scope = ? AND s.id != ?
         GROUP BY group_id
         ORDER BY score DESC
         LIMIT ?;
       SQLCMD
-    @db.query cmd, GLOBAL_ID.bytes.to_slice, n do |rs|
+    @db.query cmd, scope, GLOBAL_ID.bytes.to_slice, n do |rs|
       rs.each do
         id = UUID.new rs.read(Bytes)
         score = rs.read Int64
@@ -102,6 +96,13 @@ class Database
       end
     end
     res
+  end
+  
+  def id_exist?(id : UUID)
+    @db.query "SELECT id FROM scores WHERE id = ?;", id.bytes.to_slice
+    true
+  rescue DB::NoResultsError
+    false
   end
 
   def ytbind(yt_id : String, score_id : UUID, name : String, avatar : String)
