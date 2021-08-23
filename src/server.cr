@@ -2,6 +2,8 @@ require "kemal"
 require "base64"
 require "json"
 require "uuid/json"
+require "http/client"
+require "uri"
 
 require "./record"
 require "./hasher"
@@ -14,6 +16,10 @@ MAX_ALLOW_PPS = 350
 DATABASE = Database.new
 Record.init DATABASE
 
+YT_API = HTTP::Client.new URI.parse("https://www.googleapis.com")
+
+ALLOW_ORIGINS = ["http://10.250.150.95", "http://home.saru.moe", "https://no15rescute.github.io"]
+
 records = Hash(UUID, Record).new
 
 def json_global(json)
@@ -23,16 +29,21 @@ def json_global(json)
   end
 end
 
-def json_record(json, record : Tuple(UUID, Int64, Int32))
+def json_record(json, record : Tuple(UUID, Int64, Int32, String?, String?, String?))
   json.object do
     json.field "id", record[0]
     json.field "score", record[1]
     json.field "period", record[2]
+    unless record[3].nil?
+      json.field "yt_id", record[3]
+      json.field "yt_name", record[4]
+      json.field "yt_avatar", record[5]
+    end
   end
 end
 
 def json_record(json, record : Record)
-  json_record json, { record.id, record.score, record.period }
+  json_record json, { record.id, record.score, record.period, nil, nil, nil }
 end
 
 get "/" do
@@ -136,7 +147,7 @@ ws "/top/:amount" do |socket, context|
 end
 
 ws "/submit" do |socket, context|
-  unless ["http://10.250.150.95", "http://home.saru.moe", "https://no15rescute.github.io"].includes? context.request.headers["Origin"]?
+  unless ALLOW_ORIGINS.includes? context.request.headers["Origin"]?
     socket.close HTTP::WebSocket::CloseCode::PolicyViolation, "not authorized"
     next
   end
@@ -233,6 +244,43 @@ ws "/submit" do |socket, context|
       r.save
       records.delete r.id
     end
+  end
+end
+
+post "/link/:id/yt" do |env|
+  score_id = UUID.new env.params.url["id"]
+  token_nil = env.request.body.try &.gets(512)
+  if token_nil
+    token = token_nil.not_nil!
+    DATABASE.load score_id
+    res = YT_API.get "/youtube/v3/channels?part=snippet&mine=true&access_token=#{URI.encode token}"
+    if res.status_code == 200
+      begin
+        json = JSON.parse res.body
+        yt_id = json["items"][0]["id"].as_s
+        name = json["items"][0]["snippet"]["title"].as_s
+        avatar = json["items"][0]["snippet"]["thumbnails"]["default"]["url"].as_s
+      rescue
+        halt env, 500, "Debug: YouTube API response body : \r\n\r\n #{res.body}"
+      end
+      DATABASE.ytbind yt_id, score_id, name, avatar
+      { status: "done", id: yt_id, name: name, avatar: avatar }.to_json
+    else
+      halt env, 403
+    end
+  else
+    halt env, 403
+  end
+rescue ArgumentError
+  halt env, 400
+rescue Database::NoResult
+  halt env, 404
+end
+
+before_all do |env|
+  origin = env.request.headers["Origin"]?
+  if ALLOW_ORIGINS.includes? origin
+    env.response.headers["Access-Control-Allow-Origin"] = origin.not_nil!
   end
 end
 
